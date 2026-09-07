@@ -33,6 +33,8 @@ export interface Decision {
   savedBy?: string;
   /** True once the target was met and the solver stopped looking. */
   belowLine?: boolean;
+  /** True when this person's site was not part of the cut. */
+  outOfScope?: boolean;
 }
 
 export interface CutResult {
@@ -45,9 +47,18 @@ export interface CutResult {
   user: Decision;
 }
 
-export function runCut(company: Company, fraction: number): CutResult {
-  const target = company.payroll * fraction;
-  const order = [...company.employees].sort((a, b) => b.salary - a.salary);
+/**
+ * Which payroll the savings come out of. A company-wide cut weighs everyone
+ * against everyone; a site-scoped one — which is what a layoff at a delivery
+ * centre actually is — only ever looks at that site, so the people it compares
+ * you against are your local colleagues, not the head office.
+ */
+export type Scope = (e: Employee) => boolean;
+
+export function runCut(company: Company, fraction: number, inScope?: Scope): CutResult {
+  const eligible = inScope ? company.employees.filter(inScope) : company.employees;
+  const target = eligible.reduce((a, e) => a + e.salary, 0) * fraction;
+  const order = [...eligible].sort((a, b) => b.salary - a.salary);
 
   const techCount = new Map<string, number>();
   const teamCount = new Map<string, number>();
@@ -57,6 +68,11 @@ export function runCut(company: Company, fraction: number): CutResult {
   }
 
   const decisions = new Map<number, Decision>();
+  // Anyone outside the scope of the cut is never considered at all.
+  const inside = new Set(eligible.map((e) => e.id));
+  for (const e of company.employees) {
+    if (!inside.has(e.id)) decisions.set(e.id, { employee: e, cut: false, outOfScope: true });
+  }
   const cutIds: number[] = [];
   let saved = 0;
   let step = 0;
@@ -101,7 +117,7 @@ export function runCut(company: Company, fraction: number): CutResult {
     cutIds,
     target,
     saved,
-    payroll: company.payroll,
+    payroll: eligible.reduce((a, e) => a + e.salary, 0),
     reachedLine,
     user: decisions.get(company.user.id)!,
   };

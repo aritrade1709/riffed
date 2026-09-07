@@ -114,6 +114,66 @@ check(headShare / runs < cutShare / runs, "should cut a smaller share of people 
   check(usPct > inPct * 4, "India mode: US sites should be cut far harder than Indian ones");
 }
 
+// --- India-scoped cuts: what a delivery-centre layoff actually is -----------
+{
+  const inIndia = (e: { metro: { id: string } }) => e.metro.id.startsWith("in-");
+  const LPA = (n: number) => (n * 1e5) / 88;
+  let cutAt50 = 0, cutAt70 = 0, cutAt12 = 0, n = 0, savedByConstraint = 0;
+  let usTouched = 0;
+
+  for (const soc of socs.slice(0, 20)) {
+    for (const city of ["Bengaluru", "Hyderabad", "Pune"]) {
+      n++;
+      for (const [lpa, tally] of [[12, "a"], [50, "b"], [70, "c"]] as const) {
+        const c = buildCompany({
+          model, soc, metroId: city, seniority: seniorityByKey("senior"),
+          headcount: 399, region: "india", costRatio: 0.22, userSalary: LPA(lpa),
+        });
+        const res = runCut(c, 0.15, inIndia);
+        const cut = res.decisions.get(c.user.id)?.cut ?? false;
+        if (tally === "a" && cut) cutAt12++;
+        if (tally === "b" && cut) cutAt50++;
+        if (tally === "c") {
+          if (cut) cutAt70++;
+          else {
+            // The only thing that may save the most expensive person in the office
+            // is a constraint — being the sole holder of something, or the last of
+            // their team. Anything else means the solver skipped them wrongly.
+            const d = res.decisions.get(c.user.id);
+            check(
+              d?.skipped === "sole-holder" || d?.skipped === "last-in-team",
+              `70 LPA reader survived ${city}/${soc} for no reason: ${JSON.stringify(d?.skipped)}`,
+            );
+            savedByConstraint++;
+          }
+        }
+        // A scoped cut must never touch the head office.
+        usTouched += c.employees.filter(
+          (e) => !inIndia(e) && res.decisions.get(e.id)?.cut,
+        ).length;
+        check(res.saved >= res.target * 0.999, `scoped ${city}: target missed`);
+        const kept = c.employees.filter((e) => !res.decisions.get(e.id)?.cut);
+        const keptTech = new Set(kept.flatMap((e) => e.tech));
+        for (const t of new Set(c.employees.flatMap((e) => e.tech))) {
+          check(keptTech.has(t), `scoped ${city}: technology "${t}" lost`);
+        }
+      }
+    }
+  }
+  console.log(`\n${n} India-office-only cuts, reader's CTC varied`);
+  console.log(`  cut at 12 LPA   ${((100 * cutAt12) / n).toFixed(0)}%`);
+  console.log(`  cut at 50 LPA   ${((100 * cutAt50) / n).toFixed(0)}%`);
+  console.log(`  cut at 70 LPA   ${((100 * cutAt70) / n).toFixed(0)}%`);
+  check(usTouched === 0, "scoped cut reached the head office");
+  console.log(`  (${savedByConstraint} of the 70 LPA readers were saved by a constraint)`);
+  check(
+    cutAt70 + savedByConstraint === n,
+    "every 70 LPA reader should be cut unless a constraint saved them",
+  );
+  check(cutAt50 > n * 0.9, "a 50 LPA reader should almost always be cut");
+  check(cutAt12 === 0, "a 12 LPA reader should never be cut");
+}
+
 if (fails.length) {
   console.log(`\n${fails.length} FAILURES:`);
   for (const f of fails.slice(0, 12)) console.log("  " + f);

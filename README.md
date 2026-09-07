@@ -5,8 +5,11 @@
 Type your job title. A solver cuts fifteen percent of a company's payroll while
 losing as few people as possible. Watch whether it keeps you.
 
-Two modes. In the American one you are usually cut, because you are expensive.
-In the Indian one you usually survive, because you are not.
+Two modes and two findings. Cut a whole multinational and the American offices
+empty while the Indian ones are untouched. Cut the India office on its own —
+which is what a layoff at a delivery centre actually is — and the expensive
+Indians go, because the only people you are being weighed against are the ones
+sitting next to you.
 
 ## What it is
 
@@ -50,6 +53,11 @@ one.
 
 So this mode does not assert Indian salaries. It asks for yours.
 
+**Your CTC sets what you cost, and nothing else.** It does not move your
+colleagues. Scaling everyone by the reader's salary would make them average by
+construction — whatever they typed, they would sit in the same place in their own
+office and could never be reached.
+
 What it borrows from the American data is the *shape* of each occupation's wage
 distribution — the ratios between its 10th, 25th, 75th and 90th percentiles —
 which transfers between labour markets far better than the level does. The level
@@ -61,12 +69,28 @@ Indian sites all sit at the same wage level, because no source distinguishes
 them. Bengaluru is not modelled as more expensive than Pune. That difference is
 real, but it is not in any data that can be cited, so it is not claimed here.
 
-If you would rather not give a salary, the ratio defaults to twenty-two percent
-and is a slider on the results. **The point of the slider is that the finding
-does not depend on it.** Anywhere from eight percent to sixty percent — that is,
-from twelve times cheaper to less than twice — the American offices go first and
-the Indian ones are untouched. Across 216 simulated companies spanning that whole
+Your colleagues are priced at a stated fraction of the American equivalent,
+twenty-two percent by default, adjustable on the results. That slider is the
+difference between a services firm and a well-paid captive centre.
+
+### Where the cut comes from
+
+A company-wide cut weighs you against the head office. **The point of the cost
+slider is that this finding does not depend on it** — anywhere from eight percent
+to sixty percent, that is from twelve times cheaper to less than twice, the
+American offices go first. Across 216 simulated companies spanning the whole
 range, Indian sites lose 0.0% of their people and American sites lose 16.7%.
+
+A cut scoped to the India office never looks outside it, and the result inverts.
+The solver still takes the largest salaries first, but now they are all local, so
+what saves you is no longer being in a cheaper country — it is being cheaper than
+the person at the next desk. Holding the office at the default rate, a reader on
+12 LPA is never cut, one on 50 LPA is cut 97% of the time, and one on 70 LPA is
+always cut unless they are the sole holder of a technology. All three are
+asserted in the tests.
+
+This is the mode that matches what happens to most people laid off in Indian
+tech, and it is the default.
 
 Rupee figures convert at a pinned rate of ₹88 to the dollar, so the page stays
 static and reproducible.
@@ -76,8 +100,9 @@ static and reproducible.
 - Pick India or the United States.
 - Type a job title. Around a thousand variants are recognised, including the
   shorthand — `SDE-3`, `SRE`, `TPM`, `MTS`, `EM`, `AE`, `PMM`.
-- In India mode, give your CTC in lakh per annum if you want the numbers
-  calibrated to you.
+- In India mode, give your CTC in lakh per annum, and choose whether the cut
+  comes out of the India office alone or the whole company. The two answers are
+  different, and the difference is the point.
 - Set your city and level, or let the title fill the level in for you.
 - Read the verdict, and the reason attached to it. If you survived, it tells you
   what saved you — usually that you are the only person who knows something.
@@ -178,9 +203,11 @@ No environment variables, no API keys, no accounts.
 The test suite checks the resolver against sixty known titles, then simulates a
 hundred and eight American companies and two hundred and sixteen Indian ones,
 asserting the invariants hold in every one — the savings target is met, no
-technology is lost, no team is emptied — along with each claim the project makes
-about the result, including that American sites are cut far harder than Indian
-ones at every point on the cost-ratio slider.
+technology is lost, no team is emptied, and a scoped cut never reaches outside
+its scope — along with each claim the project makes about the result: that
+American sites are cut far harder than Indian ones at every point on the
+cost-ratio slider, and that in an India-scoped cut the outcome tracks the
+reader's own salary.
 
 ## Built with
 

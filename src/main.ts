@@ -1,7 +1,7 @@
 import "./style.css";
 import { loadModel, type Model, type Func } from "./model";
 import { resolveTitle, knownTitles, SENIORITY, seniorityByKey, type Seniority } from "./titles";
-import { buildCompany, nationalSalary, type Company, type Region } from "./company";
+import { buildCompany, type Company, type Region } from "./company";
 import { runCut, scarcest, breakdownBy, type CutResult } from "./solver";
 import {
   COST_RATIO_RANGE, DEFAULT_COST_RATIO, formatINR, INDIA_CITIES, INR_PER_USD,
@@ -14,6 +14,8 @@ const TARGET = 0.15;
 const app = document.querySelector<HTMLElement>("#app")!;
 
 let region: Region = "india";
+/** In India mode, whether the savings come out of the India office alone. */
+let indiaOnly = true;
 
 const usd = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
 const money = (n: number) => (region === "india" ? formatINR(n) : usd(n));
@@ -82,11 +84,19 @@ function setup(prefill = "", message = "", showChooser = false) {
           ? `<div class="row"><div>
               <label for="ctc">Your CTC, in lakh per annum <span class="opt">optional</span></label>
               <input type="text" id="ctc" placeholder="28" autocomplete="off" inputmode="decimal" />
-             </div><div></div></div>
-             <p class="note">No source publishes Indian salaries by role and city, so nothing
-             here is assumed about what you earn. Give your CTC and everything Indian in the
-             company is scaled to it. Leave it blank and it assumes an Indian role costs
-             ${Math.round(DEFAULT_COST_RATIO * 100)}% of the American one, which you can change afterwards.</p>`
+             </div><div>
+              <label for="scope">Who the cut comes out of</label>
+              <select id="scope">
+                <option value="india"${indiaOnly ? " selected" : ""}>The India office only</option>
+                <option value="all"${indiaOnly ? "" : " selected"}>The whole company</option>
+              </select>
+             </div></div>
+             <p class="note">No source publishes Indian salaries by role and city, so nothing here
+             is assumed about what you earn — your CTC sets what you cost and nothing else. Your
+             colleagues are priced at ${Math.round(DEFAULT_COST_RATIO * 100)}% of the American
+             equivalent, which you can change afterwards. A cut scoped to the India office is what
+             a layoff at a delivery centre actually is; a company-wide one weighs you against the
+             head office instead.</p>`
           : ""
       }
 
@@ -135,24 +145,20 @@ function submit(raw: string) {
   }
   const metroId = (document.querySelector("#metro") as HTMLSelectElement).value;
   const level = seniorityByKey((document.querySelector("#level") as HTMLSelectElement).value);
+  const scopeSel = document.querySelector("#scope") as HTMLSelectElement | null;
+  if (scopeSel) indiaOnly = scopeSel.value === "india";
 
-  let ratio = DEFAULT_COST_RATIO;
+  // A CTC sets what *you* cost, and nothing else. Scaling everyone else by it
+  // too — which is what this used to do — made the reader average by
+  // construction, so no salary they typed could ever get them cut.
+  let ownSalary: number | undefined;
   if (region === "india") {
     const raw = (document.querySelector("#ctc") as HTMLInputElement | null)?.value ?? "";
     const lpa = parseFloat(raw.replace(/[^0-9.]/g, ""));
-    if (isFinite(lpa) && lpa > 0) {
-      // Calibrate from what the reader actually earns: their salary as a fraction
-      // of what the same role and level pays nationally in the United States.
-      const occ = model.occupations.find((o) => o.soc === resolved.soc) ?? model.occupations[0]!;
-      const us = nationalSalary(occ, level.percentile);
-      ratio = clampRatio(lpaToUsd(lpa) / us);
-    }
+    if (isFinite(lpa) && lpa > 0) ownSalary = lpaToUsd(lpa);
   }
-  show(resolved.soc, metroId, level, undefined, ratio);
+  show(resolved.soc, metroId, level, ownSalary, DEFAULT_COST_RATIO);
 }
-
-const clampRatio = (x: number) =>
-  Math.min(COST_RATIO_RANGE[1], Math.max(COST_RATIO_RANGE[0], x));
 
 /* ----------------------------------------------------------------- result */
 
@@ -163,7 +169,8 @@ function show(
   const company = buildCompany({
     model, soc, metroId, seniority: level, headcount: HEADCOUNT, userSalary, region, costRatio,
   });
-  const result = runCut(company, TARGET);
+  const scoped = region === "india" && indiaOnly;
+  const result = runCut(company, TARGET, scoped ? (e) => isIndiaSite(e.metro) : undefined);
   render(company, result, soc, metroId, level, userSalary, costRatio);
 }
 
@@ -176,11 +183,20 @@ function render(
   const user = company.user;
   const cutCount = result.cutIds.length;
   const scarce = scarcest(company, user);
+  // Where the reader sits among the people the cut actually looked at.
+  const pool = company.employees.filter((e) => !result.decisions.get(e.id)?.outOfScope);
+  const sorted = [...pool].sort((a, b) => a.salary - b.salary);
+  const context = {
+    rank: pool.filter((e) => e.salary > user.salary).length + 1,
+    size: pool.length,
+    median: sorted[Math.floor(sorted.length / 2)]!.salary,
+    scoped: region === "india" && indiaOnly,
+  };
 
   app.innerHTML = `
     <div class="mast"><h1>riffed</h1><p>a solver decides who goes</p></div>
     <h2 class="verdict ${u.cut ? "cut" : ""}">${u.cut ? "You were cut." : "You kept your job."}</h2>
-    <p class="reason">${reason(company, result, scarce)}</p>
+    <p class="reason">${reason(company, result, scarce, context)}</p>
 
     <div class="grid-wrap">
       <div class="grid" id="grid">${company.employees
@@ -221,9 +237,15 @@ function render(
 
     ${
       region === "india"
-        ? `<h2 class="sec">What if the gap were different?</h2>
-           <p class="seclede">Nothing about the result depends on getting this number right.
-             Move it anywhere in the range and the American offices still go first.</p>
+        ? `<h2 class="sec">${indiaOnly ? "What this office pays" : "What if the gap were different?"}</h2>
+           <p class="seclede">${
+             indiaOnly
+               ? `Sets what everyone around you earns, relative to the American equivalent — the
+                  difference between a services firm and a well-paid captive centre. Your own CTC
+                  is unaffected by it.`
+               : `Nothing about the result depends on getting this number right. Move it anywhere
+                  in the range and the American offices still go first.`
+           }</p>
            <div class="slider">
              <input type="range" id="ratio" min="${COST_RATIO_RANGE[0] * 100}" max="${
                COST_RATIO_RANGE[1] * 100
@@ -246,7 +268,7 @@ function render(
     show(soc, metroId, level, Math.round((userSalary ?? user.salary) * 0.8), costRatio);
   const slider = document.querySelector<HTMLInputElement>("#ratio");
   if (slider) {
-    slider.onchange = () => show(soc, metroId, level, undefined, Number(slider.value) / 100);
+    slider.onchange = () => show(soc, metroId, level, userSalary, Number(slider.value) / 100);
   }
 
   animate(result);
@@ -264,30 +286,54 @@ function animate(result: CutResult) {
   });
 }
 
+interface Context { rank: number; size: number; median: number; scoped: boolean }
+
 function reason(
   company: Company, result: CutResult,
   scarce: { tech: string; others: number } | null,
+  ctx: Context,
 ): string {
   const u = result.user;
   const user = company.user;
-  const cheaperThanLine = user.salary < result.reachedLine;
 
   if (u.cut) {
+    const place = ctx.scoped
+      ? ` You were ${
+          ctx.rank === 1 ? "<strong>the</strong>" : `the ${ordinal(ctx.rank)}`
+        } most expensive person in an office of ${ctx.size}, where the median is <strong>${money(
+          ctx.median,
+        )}</strong>. The cut never looked outside it.`
+      : "";
     const cover = scarce
-      ? `The rarest thing you know is <strong>${escape(scarce.tech)}</strong>, and <strong>${
+      ? ` The rarest thing you know is <strong>${escape(scarce.tech)}</strong>, and <strong>${
           scarce.others
         }</strong> other ${scarce.others === 1 ? "person here knows" : "people here know"} it too.`
-      : `Nothing you know is unique here.`;
-    return `You cost <strong>${money(user.salary)}</strong>. ${cover} Removing you covered ${(
-      (user.salary / result.target) * 100
-    ).toFixed(1)}% of the target in one step.`;
+      : "";
+    return `You cost <strong>${money(user.salary)}</strong>.${place}${cover}`;
   }
+
   if (u.skipped === "sole-holder") {
-    return `You are the only person here who knows <strong>${escape(u.savedBy!)}</strong>. You were reached and passed over — cutting you would have left the company without it.`;
+    return `You are the only person here who knows <strong>${escape(
+      u.savedBy!,
+    )}</strong>. You were reached and passed over — cutting you would have left the company without it.`;
   }
   if (u.skipped === "last-in-team") {
     return `You are the last person left in your team. Cutting you would have closed the function outright.`;
   }
+
+  if (ctx.scoped) {
+    return `The cut only looked at your office, and the target was met before it got to you.
+      It stopped at <strong>${money(result.reachedLine)}</strong>; you cost ${money(
+        user.salary,
+      )}, against a median here of ${money(ctx.median)}. ${
+        user.salary > ctx.median
+          ? `You are above that median — ${ctx.rank - 1} ${
+              ctx.rank === 2 ? "person" : "people"
+            } were simply more expensive.`
+          : `Being cheap is the whole reason you are still here.`
+      }`;
+  }
+
   if (region === "india" && isIndiaSite(user.metro)) {
     // The comparison that makes the point: the same job, the other side of the world.
     const counterpart = company.employees
@@ -302,7 +348,8 @@ function reason(
       : "";
     return `You cost <strong>${money(user.salary)}</strong>.${gap} Being cheap is the whole reason you are still here.`;
   }
-  if (cheaperThanLine) {
+
+  if (user.salary < result.reachedLine) {
     return `The target was met before the solver got to you. It stopped at <strong>${money(
       result.reachedLine,
     )}</strong>; you cost ${money(user.salary)}. Being cheap is the whole reason you are still here.`;
@@ -315,6 +362,11 @@ function siteLabel(e: { metro: { short: string; id: string } }): string {
   return region === "india" && !isIndiaSite(e.metro as never)
     ? `${e.metro.short} (US)`
     : e.metro.short;
+}
+
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"], v = n % 100;
+  return n + (s[(v - 20) % 10] ?? s[v] ?? s[0])!;
 }
 
 function bars(rows: Array<{ key: string; cut: number; total: number; medianSalary: number }>, highlight: string) {
