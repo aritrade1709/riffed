@@ -76,6 +76,44 @@ const exp = byCostQuartile.get("expensive offices")!, cheap = byCostQuartile.get
 check(pct(exp) > pct(cheap) * 1.5, "location effect missing: expensive offices should be cut harder");
 check(headShare / runs < cutShare / runs, "should cut a smaller share of people than of payroll");
 
+// --- India mode ------------------------------------------------------------
+{
+  const cities = ["Bengaluru", "Hyderabad", "Pune", "Chennai"];
+  let indiaCut = 0, indiaTotal = 0, usCut = 0, usTotal = 0, runsIn = 0;
+  for (const soc of socs.slice(0, 18)) {
+    for (const city of cities) {
+      for (const ratio of [0.08, 0.22, 0.6]) {
+        const c = buildCompany({
+          model, soc, metroId: city, seniority: seniorityByKey("senior"),
+          headcount: 399, region: "india", costRatio: ratio,
+        });
+        const res = runCut(c, 0.15);
+        runsIn++;
+        check(c.employees.length === 400, "india: wrong headcount");
+        check(res.saved >= res.target * 0.999, `india ${city}/${ratio}: target missed`);
+        const kept = c.employees.filter((e) => !res.decisions.get(e.id)?.cut);
+        const keptTech = new Set(kept.flatMap((e) => e.tech));
+        for (const t of new Set(c.employees.flatMap((e) => e.tech))) {
+          check(keptTech.has(t), `india ${city}: technology "${t}" lost`);
+        }
+        check(c.offices.filter((o) => o.id.startsWith("in-")).length === 3, "india: expected 3 Indian sites");
+        check(c.offices.filter((o) => !o.id.startsWith("in-")).length === 2, "india: expected 2 US sites");
+        for (const e of c.employees) {
+          const cut = res.decisions.get(e.id)?.cut ? 1 : 0;
+          if (e.metro.id.startsWith("in-")) { indiaCut += cut; indiaTotal++; }
+          else { usCut += cut; usTotal++; }
+        }
+      }
+    }
+  }
+  const inPct = (100 * indiaCut) / indiaTotal, usPct = (100 * usCut) / usTotal;
+  console.log(`\n${runsIn} India-mode companies simulated`);
+  console.log(`  cut rate, Indian sites   ${inPct.toFixed(1)}%`);
+  console.log(`  cut rate, US sites       ${usPct.toFixed(1)}%`);
+  // The claim the India mode makes, across the whole slider range.
+  check(usPct > inPct * 4, "India mode: US sites should be cut far harder than Indian ones");
+}
+
 if (fails.length) {
   console.log(`\n${fails.length} FAILURES:`);
   for (const f of fails.slice(0, 12)) console.log("  " + f);

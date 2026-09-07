@@ -5,6 +5,9 @@
 Type your job title. A solver cuts fifteen percent of a company's payroll while
 losing as few people as possible. Watch whether it keeps you.
 
+Two modes. In the American one you are usually cut, because you are expensive.
+In the Indian one you usually survive, because you are not.
+
 ## What it is
 
 A layoff, run as an optimisation problem.
@@ -30,10 +33,51 @@ That is not a rule anyone wrote. Minimising headcount against a dollar target
 means taking the largest salaries first, and the largest salaries are the senior
 people in the expensive cities.
 
+## India mode
+
+The same company, built with an Indian delivery centre and an American head
+office. The solver empties the American offices and leaves the Indian ones
+almost untouched, and it is never told which country anyone is in.
+
+There is no free, authoritative, IT-specific, city-level wage table for India.
+The ILO publishes median monthly earnings for India by occupation, current and
+sourced from the Periodic Labour Force Survey, but only at the nine ISCO-08
+major groups, with no percentiles and no cities. Its "Professionals" figure
+covers teachers, nurses and lawyers alongside engineers, so it says nothing
+useful about a software engineer in Bengaluru, and comparing it against an
+American software developer's wage would imply a gap roughly five times the real
+one.
+
+So this mode does not assert Indian salaries. It asks for yours.
+
+What it borrows from the American data is the *shape* of each occupation's wage
+distribution — the ratios between its 10th, 25th, 75th and 90th percentiles —
+which transfers between labour markets far better than the level does. The level
+comes from your own CTC: your salary as a fraction of what the same role and
+level pays nationally in the United States becomes the ratio applied to everyone
+Indian in the company.
+
+Indian sites all sit at the same wage level, because no source distinguishes
+them. Bengaluru is not modelled as more expensive than Pune. That difference is
+real, but it is not in any data that can be cited, so it is not claimed here.
+
+If you would rather not give a salary, the ratio defaults to twenty-two percent
+and is a slider on the results. **The point of the slider is that the finding
+does not depend on it.** Anywhere from eight percent to sixty percent — that is,
+from twelve times cheaper to less than twice — the American offices go first and
+the Indian ones are untouched. Across 216 simulated companies spanning that whole
+range, Indian sites lose 0.0% of their people and American sites lose 16.7%.
+
+Rupee figures convert at a pinned rate of ₹88 to the dollar, so the page stays
+static and reproducible.
+
 ## Using it
 
+- Pick India or the United States.
 - Type a job title. Around a thousand variants are recognised, including the
   shorthand — `SDE-3`, `SRE`, `TPM`, `MTS`, `EM`, `AE`, `PMM`.
+- In India mode, give your CTC in lakh per annum if you want the numbers
+  calibrated to you.
 - Set your city and level, or let the title fill the level in for you.
 - Read the verdict, and the reason attached to it. If you survived, it tells you
   what saved you — usually that you are the only person who knows something.
@@ -132,9 +176,11 @@ No environment variables, no API keys, no accounts.
 | `pnpm data` | regenerate `public/data/model.json` from source (needs Python, pandas, openpyxl) |
 
 The test suite checks the resolver against sixty known titles, then simulates a
-hundred and eight companies and asserts the invariants hold in all of them — the
-savings target is met, no technology is lost, no team is emptied — along with
-the two claims the project makes about the result.
+hundred and eight American companies and two hundred and sixteen Indian ones,
+asserting the invariants hold in every one — the savings target is met, no
+technology is lost, no team is emptied — along with each claim the project makes
+about the result, including that American sites are cut far harder than Indian
+ones at every point on the cost-ratio slider.
 
 ## Built with
 
@@ -150,6 +196,9 @@ static and self-contained. Deployed on GitHub Pages.
 | [BLS OEWS May 2024, by industry](https://www.bls.gov/oes/tables.htm) | Occupation mix for NAICS 5415 | Public domain |
 | [BLS OEWS May 2024, by metro area](https://www.bls.gov/oes/tables.htm) | Median wage per occupation per city | Public domain |
 | [O*NET 29.1, Technology Skills](https://www.onetcenter.org/database.html) | Technologies used in each occupation | [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), US Department of Labor |
+
+India mode uses no Indian wage dataset, for the reason given above. It is
+calibrated by the reader, or by a stated default.
 
 O*NET® is a trademark of the U.S. Department of Labor, Employment and Training
 Administration.

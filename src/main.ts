@@ -1,17 +1,29 @@
 import "./style.css";
 import { loadModel, type Model, type Func } from "./model";
 import { resolveTitle, knownTitles, SENIORITY, seniorityByKey, type Seniority } from "./titles";
-import { buildCompany, type Company } from "./company";
+import { buildCompany, nationalSalary, type Company, type Region } from "./company";
 import { runCut, scarcest, breakdownBy, type CutResult } from "./solver";
+import {
+  COST_RATIO_RANGE, DEFAULT_COST_RATIO, formatINR, INDIA_CITIES, INR_PER_USD,
+  isIndiaSite, lpaToUsd,
+} from "./regions";
 
 // The user is inserted into the company, so generate one short of the target.
 const HEADCOUNT = 399;
 const TARGET = 0.15;
 const app = document.querySelector<HTMLElement>("#app")!;
 
-const money = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
-const compact = (n: number) =>
-  n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : `$${Math.round(n / 1e3)}k`;
+let region: Region = "india";
+
+const usd = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
+const money = (n: number) => (region === "india" ? formatINR(n) : usd(n));
+const compact = (n: number) => {
+  if (region === "india") {
+    const r = n * INR_PER_USD;
+    return r >= 1e7 ? `₹${(r / 1e7).toFixed(1)} Cr` : `₹${(r / 1e5).toFixed(0)} L`;
+  }
+  return n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : `$${Math.round(n / 1e3)}k`;
+};
 
 const FUNC_CLASS: Record<Func, string> = {
   engineering: "eng", leadership: "lead", operations: "ops",
@@ -23,12 +35,25 @@ let model: Model;
 /* ------------------------------------------------------------------ setup */
 
 function setup(prefill = "", message = "", showChooser = false) {
+  const india = region === "india";
   app.innerHTML = `
     <div class="mast"><h1>riffed</h1><p>a solver decides who goes</p></div>
     <section class="setup">
+      <div class="modes" role="tablist">
+        <button class="mode${india ? " on" : ""}" data-region="india">India</button>
+        <button class="mode${india ? "" : " on"}" data-region="us">United States</button>
+      </div>
+
       <p class="lede">A company has to cut fifteen percent of payroll. It will lose as few people as possible.</p>
-      <p class="sub">Type what you do. The company gets built around you out of federal
-        employment data — real staffing mix, real wages for your city. Then the solver runs.</p>
+      <p class="sub">${
+        india
+          ? `Type what you do and what you are paid. You get an Indian delivery centre
+             with an American head office, staffed from federal occupational data.
+             Then the solver runs.`
+          : `Type what you do. The company gets built around you out of federal
+             employment data — real staffing mix, real wages for your city.
+             Then the solver runs.`
+      }</p>
 
       <label for="title">Your job title</label>
       <input type="text" id="title" placeholder="Senior Software Engineer" value="${escape(prefill)}" autocomplete="off" spellcheck="false" />
@@ -38,9 +63,11 @@ function setup(prefill = "", message = "", showChooser = false) {
       <div class="row">
         <div>
           <label for="metro">Where you work</label>
-          <select id="metro">${model.metros
-            .map((m) => `<option value="${m.id}">${escape(m.name)}</option>`)
-            .join("")}</select>
+          <select id="metro">${
+            india
+              ? INDIA_CITIES.map((c) => `<option value="${c}">${c}</option>`).join("")
+              : model.metros.map((m) => `<option value="${m.id}">${escape(m.name)}</option>`).join("")
+          }</select>
         </div>
         <div>
           <label for="level">Level</label>
@@ -49,6 +76,19 @@ function setup(prefill = "", message = "", showChooser = false) {
           ).join("")}</select>
         </div>
       </div>
+
+      ${
+        india
+          ? `<div class="row"><div>
+              <label for="ctc">Your CTC, in lakh per annum <span class="opt">optional</span></label>
+              <input type="text" id="ctc" placeholder="28" autocomplete="off" inputmode="decimal" />
+             </div><div></div></div>
+             <p class="note">No source publishes Indian salaries by role and city, so nothing
+             here is assumed about what you earn. Give your CTC and everything Indian in the
+             company is scaled to it. Leave it blank and it assumes an Indian role costs
+             ${Math.round(DEFAULT_COST_RATIO * 100)}% of the American one, which you can change afterwards.</p>`
+          : ""
+      }
 
       <button class="go" id="run">Run the cut</button>
       <p class="note">Nothing is sent anywhere. It runs in your browser.</p>
@@ -59,11 +99,20 @@ function setup(prefill = "", message = "", showChooser = false) {
   const go = () => submit(input.value);
   document.querySelector<HTMLButtonElement>("#run")!.onclick = go;
   input.onkeydown = (e) => { if (e.key === "Enter") go(); };
+  document.querySelector<HTMLInputElement>("#ctc")?.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") go();
+  });
   input.oninput = () => {
     // Fill the level dropdown from what they typed, without overriding a manual pick.
     const r = resolveTitle(input.value);
     if (r) (document.querySelector("#level") as HTMLSelectElement).value = r.seniority.key;
   };
+  for (const b of document.querySelectorAll<HTMLButtonElement>(".mode")) {
+    b.onclick = () => {
+      region = b.dataset.region as Region;
+      setup(input.value);
+    };
+  }
   for (const c of document.querySelectorAll<HTMLButtonElement>(".chip")) {
     c.onclick = () => { input.value = c.textContent!; submit(c.textContent!); };
   }
@@ -86,20 +135,42 @@ function submit(raw: string) {
   }
   const metroId = (document.querySelector("#metro") as HTMLSelectElement).value;
   const level = seniorityByKey((document.querySelector("#level") as HTMLSelectElement).value);
-  show(resolved.soc, metroId, level, undefined);
+
+  let ratio = DEFAULT_COST_RATIO;
+  if (region === "india") {
+    const raw = (document.querySelector("#ctc") as HTMLInputElement | null)?.value ?? "";
+    const lpa = parseFloat(raw.replace(/[^0-9.]/g, ""));
+    if (isFinite(lpa) && lpa > 0) {
+      // Calibrate from what the reader actually earns: their salary as a fraction
+      // of what the same role and level pays nationally in the United States.
+      const occ = model.occupations.find((o) => o.soc === resolved.soc) ?? model.occupations[0]!;
+      const us = nationalSalary(occ, level.percentile);
+      ratio = clampRatio(lpaToUsd(lpa) / us);
+    }
+  }
+  show(resolved.soc, metroId, level, undefined, ratio);
 }
+
+const clampRatio = (x: number) =>
+  Math.min(COST_RATIO_RANGE[1], Math.max(COST_RATIO_RANGE[0], x));
 
 /* ----------------------------------------------------------------- result */
 
-function show(soc: string, metroId: string, level: Seniority, userSalary?: number) {
-  const company = buildCompany({ model, soc, metroId, seniority: level, headcount: HEADCOUNT, userSalary });
+function show(
+  soc: string, metroId: string, level: Seniority,
+  userSalary?: number, costRatio = DEFAULT_COST_RATIO,
+) {
+  const company = buildCompany({
+    model, soc, metroId, seniority: level, headcount: HEADCOUNT, userSalary, region, costRatio,
+  });
   const result = runCut(company, TARGET);
-  render(company, result, soc, metroId, level, userSalary);
+  render(company, result, soc, metroId, level, userSalary, costRatio);
 }
 
 function render(
   company: Company, result: CutResult,
   soc: string, metroId: string, level: Seniority, userSalary?: number,
+  costRatio = DEFAULT_COST_RATIO,
 ) {
   const u = result.user;
   const user = company.user;
@@ -132,11 +203,12 @@ function render(
     </div>
 
     <h2 class="sec">Where the cuts landed, by office</h2>
-    <p class="seclede">Offices ordered by median pay. The solver was never told where anyone works.</p>
+    <p class="seclede">Offices ordered by median pay. The solver was never told where anyone works${
+      region === "india" ? ", or which country they are in" : ""
+    }.</p>
     ${bars(
-      breakdownBy(company, result, (e) => e.metro.short)
-        .sort((a, b) => b.medianSalary - a.medianSalary),
-      user.metro.short,
+      breakdownBy(company, result, siteLabel).sort((a, b) => b.medianSalary - a.medianSalary),
+      siteLabel(user),
     )}
 
     <h2 class="sec">Where the cuts landed, by level</h2>
@@ -147,6 +219,22 @@ function render(
       user.level,
     )}
 
+    ${
+      region === "india"
+        ? `<h2 class="sec">What if the gap were different?</h2>
+           <p class="seclede">Nothing about the result depends on getting this number right.
+             Move it anywhere in the range and the American offices still go first.</p>
+           <div class="slider">
+             <input type="range" id="ratio" min="${COST_RATIO_RANGE[0] * 100}" max="${
+               COST_RATIO_RANGE[1] * 100
+             }" step="1" value="${Math.round(costRatio * 100)}" />
+             <div class="sliderval num">An Indian role costs <strong>${Math.round(
+               costRatio * 100,
+             )}%</strong> of the American one <span>· ${(1 / costRatio).toFixed(1)}× cheaper</span></div>
+           </div>`
+        : ""
+    }
+
     <div class="actions">
       <button class="ghost" id="cheaper">Run it again with my salary 20% lower</button>
       <button class="ghost" id="again">Start over</button>
@@ -155,7 +243,11 @@ function render(
 
   document.querySelector<HTMLButtonElement>("#again")!.onclick = () => setup();
   document.querySelector<HTMLButtonElement>("#cheaper")!.onclick = () =>
-    show(soc, metroId, level, Math.round((userSalary ?? user.salary) * 0.8));
+    show(soc, metroId, level, Math.round((userSalary ?? user.salary) * 0.8), costRatio);
+  const slider = document.querySelector<HTMLInputElement>("#ratio");
+  if (slider) {
+    slider.onchange = () => show(soc, metroId, level, undefined, Number(slider.value) / 100);
+  }
 
   animate(result);
 }
@@ -196,12 +288,33 @@ function reason(
   if (u.skipped === "last-in-team") {
     return `You are the last person left in your team. Cutting you would have closed the function outright.`;
   }
+  if (region === "india" && isIndiaSite(user.metro)) {
+    // The comparison that makes the point: the same job, the other side of the world.
+    const counterpart = company.employees
+      .filter((e) => !isIndiaSite(e.metro) && e.occ.soc === user.occ.soc)
+      .sort((a, b) => b.salary - a.salary)[0];
+    const gap = counterpart
+      ? ` The same job in ${escape(counterpart.metro.short)} costs <strong>${money(
+          counterpart.salary,
+        )}</strong> — ${(counterpart.salary / user.salary).toFixed(1)} times you. ${
+          result.decisions.get(counterpart.id)?.cut ? "They went instead." : ""
+        }`
+      : "";
+    return `You cost <strong>${money(user.salary)}</strong>.${gap} Being cheap is the whole reason you are still here.`;
+  }
   if (cheaperThanLine) {
     return `The target was met before the solver got to you. It stopped at <strong>${money(
       result.reachedLine,
     )}</strong>; you cost ${money(user.salary)}. Being cheap is the whole reason you are still here.`;
   }
   return `The target was met before the solver reached you.`;
+}
+
+/** The country only needs saying when the company spans two of them. */
+function siteLabel(e: { metro: { short: string; id: string } }): string {
+  return region === "india" && !isIndiaSite(e.metro as never)
+    ? `${e.metro.short} (US)`
+    : e.metro.short;
 }
 
 function bars(rows: Array<{ key: string; cut: number; total: number; medianSalary: number }>, highlight: string) {

@@ -10,6 +10,7 @@
  */
 import type { Func, Metro, Model, Occupation } from "./model";
 import type { Seniority } from "./titles";
+import { DEFAULT_COST_RATIO, indiaSite, INDIA_CITIES, isIndiaSite } from "./regions";
 
 export interface Employee {
   id: number;
@@ -58,6 +59,12 @@ function weightedPick<T>(items: T[], weights: number[], r: number): T {
   return items[items.length - 1]!;
 }
 
+/** What this occupation pays at this percentile nationally in the US. Used to
+ * calibrate India mode from a reader's own salary. */
+export function nationalSalary(occ: Occupation, percentile: number): number {
+  return wageAt(occ, percentile, 1);
+}
+
 /** Interpolate a salary at a percentile through the five published points. */
 function wageAt(occ: Occupation, p: number, scale: number): number {
   const pts: Array<[number, number]> = [
@@ -82,7 +89,11 @@ function wageAt(occ: Occupation, p: number, scale: number): number {
 }
 
 /** Wage scale for an occupation in a metro, relative to its national median. */
-function metroScale(occ: Occupation, metro: Metro, model: Model): number {
+function metroScale(occ: Occupation, metro: Metro, model: Model, ratio: number): number {
+  // Indian sites have no published per-occupation wage anywhere, so the national
+  // US distribution for the occupation is scaled by the cost ratio instead. The
+  // shape is borrowed; the level is not asserted.
+  if (isIndiaSite(metro)) return ratio;
   const local = occ.metro[metro.id];
   if (local) return local / occ.nat.p50;
   // No published figure for this occupation here: fall back to the metro's
@@ -93,38 +104,79 @@ function metroScale(occ: Occupation, metro: Metro, model: Model): number {
 }
 
 const OFFICE_WEIGHTS = [0.34, 0.24, 0.18, 0.13, 0.11];
+/** India mode: most of the headcount sits in the delivery centres, not the HQ. */
+const INDIA_OFFICE_WEIGHTS = [0.34, 0.22, 0.18, 0.14, 0.12];
+
+export type Region = "us" | "india";
 
 export interface BuildOptions {
   model: Model;
   soc: string;
+  /** A BLS metro id in US mode, an Indian city name in India mode. */
   metroId: string;
   seniority: Seniority;
   headcount: number;
   /** Overrides the user's computed salary, for the "what if I cost less" rerun. */
   userSalary?: number;
+  region?: Region;
+  /** What an Indian role costs as a fraction of the equivalent US one. */
+  costRatio?: number;
 }
 
 export function buildCompany(opts: BuildOptions): Company {
   const { model, soc, metroId, seniority, headcount } = opts;
-  const r = rng(`${soc}|${metroId}|${headcount}`);
+  const region: Region = opts.region ?? "us";
+  const ratio = opts.costRatio ?? DEFAULT_COST_RATIO;
+  const r = rng(`${region}|${soc}|${metroId}|${headcount}|${ratio.toFixed(3)}`);
 
-  const userMetro = model.metros.find((m) => m.id === metroId) ?? model.metros[0]!;
   const userOcc =
     model.occupations.find((o) => o.soc === soc) ?? model.occupations[0]!;
+  const nationalDev = model.occupations.find((o) => o.soc === "15-1252")?.nat.p50 ?? 133080;
 
-  // Offices: the user's, plus four others drawn with probability proportional to
-  // the square root of local software employment. Raw employment weighting would
-  // put every office in the same handful of expensive hubs; the square root
-  // flattens it to something closer to how companies actually distribute sites.
-  const offices: Metro[] = [userMetro];
-  const pool = model.metros.filter((m) => m.id !== userMetro.id);
-  const weights = pool.map((m) => Math.sqrt(Math.max(1, m.devMedian / 1000)));
-  while (offices.length < 5 && pool.length) {
-    const pick = weightedPick(pool, weights, r());
-    const i = pool.indexOf(pick);
-    pool.splice(i, 1);
-    weights.splice(i, 1);
-    offices.push(pick);
+  let userMetro: Metro;
+  const offices: Metro[] = [];
+
+  if (region === "india") {
+    // An Indian delivery centre with a US headquarters — the shape of company
+    // that actually runs these cuts. Three Indian sites and two American ones.
+    const city = (INDIA_CITIES as readonly string[]).includes(metroId)
+      ? metroId
+      : INDIA_CITIES[0]!;
+    userMetro = indiaSite(city, nationalDev, ratio);
+    offices.push(userMetro);
+
+    const others = (INDIA_CITIES as readonly string[]).filter((c) => c !== city);
+    for (let i = 0; i < 2 && others.length; i++) {
+      const pick = others.splice(Math.floor(r() * others.length), 1)[0]!;
+      offices.push(indiaSite(pick, nationalDev, ratio));
+    }
+    // US sites, weighted towards the large expensive hubs where headquarters sit.
+    const usPool = model.metros.slice(0, 10);
+    const usWeights = usPool.map((m) => m.devMedian);
+    const taken = new Set<string>();
+    let guard = 0;
+    while (offices.length < 5 && guard++ < 200) {
+      const pick = weightedPick(usPool, usWeights, r());
+      if (taken.has(pick.id)) continue;
+      taken.add(pick.id);
+      offices.push(pick);
+    }
+  } else {
+    userMetro = model.metros.find((m) => m.id === metroId) ?? model.metros[0]!;
+    offices.push(userMetro);
+    // Offices drawn with probability proportional to the square root of local
+    // software employment. Raw employment weighting would put every office in the
+    // same handful of expensive hubs; the square root flattens it to something
+    // closer to how companies actually distribute sites.
+    const pool = model.metros.filter((m) => m.id !== userMetro.id);
+    const weights = pool.map((m) => Math.sqrt(Math.max(1, m.devMedian / 1000)));
+    while (offices.length < 5 && pool.length) {
+      const pick = weightedPick(pool, weights, r());
+      const i = pool.indexOf(pick);
+      pool.splice(i, 1);
+      weights.splice(i, 1);
+      offices.push(pick);
+    }
   }
 
   const employees: Employee[] = [];
@@ -132,11 +184,15 @@ export function buildCompany(opts: BuildOptions): Company {
 
   for (let i = 0; i < headcount; i++) {
     const occ = weightedPick(model.occupations, occShares, r());
-    const metro = weightedPick(offices, OFFICE_WEIGHTS.slice(0, offices.length), r());
+    const metro = weightedPick(
+      offices,
+      (region === "india" ? INDIA_OFFICE_WEIGHTS : OFFICE_WEIGHTS).slice(0, offices.length),
+      r(),
+    );
     // Most people sit in the middle of their band. Averaging three draws gives a
     // centre-weighted spread without pretending to a distribution we don't have.
     const percentile = (r() + r() + r()) / 3;
-    const salary = wageAt(occ, percentile, metroScale(occ, metro, model));
+    const salary = wageAt(occ, percentile, metroScale(occ, metro, model, ratio));
     employees.push({
       id: i,
       occ,
@@ -151,7 +207,7 @@ export function buildCompany(opts: BuildOptions): Company {
     });
   }
 
-  const userScale = metroScale(userOcc, userMetro, model);
+  const userScale = metroScale(userOcc, userMetro, model, ratio);
   const user: Employee = {
     id: -1,
     occ: userOcc,
