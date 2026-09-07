@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+.env
+.env.*
+scripts/.cache
+
+# Working material for the video — never published.
+PROJECT.md
+episode/

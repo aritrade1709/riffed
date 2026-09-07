@@ -1,0 +1,4 @@
+# pnpm 12 asks before running a dependency's install scripts. esbuild needs its
+# to unpack the platform binary that Vite compiles with.
+allowBuilds:
+  esbuild: true
